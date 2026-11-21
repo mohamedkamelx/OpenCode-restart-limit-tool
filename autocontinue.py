@@ -39,6 +39,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from loadenv import load_env
+
+load_env()
+
 DEFAULT_PROMPT = "continue"
 
 # Mirrors the classification OpenCode itself uses for provider errors,
@@ -230,6 +234,10 @@ class Watcher:
     def _restart_router(self):
         """Cycle the PPPoE link(s) so the next continue gets a fresh IP."""
         if not self.args.router:
+            return
+        if not self.args.router_wans:
+            self.log("router: no WANs configured "
+                     "(set ROUTER_WANS in .env or pass --router-wans)")
             return
         try:
             from router_restart import restart as restart_router
@@ -476,10 +484,11 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="detect and log, send nothing")
     ap.add_argument("--router", action=argparse.BooleanOptionalAction, default=False,
                     help="restart the router WANs before each continue "
-                         "(default: off; enable on the DG8045 setup)")
+                         "(default: off)")
     ap.add_argument("--router-wans",
-                    default="INTERNET_TR069_R_VID_20,INTERNET_TR069_R_PTM3",
-                    help="comma-separated WAN names to restart, in order")
+                    default=os.environ.get("ROUTER_WANS", ""),
+                    help="comma-separated WAN names to restart, in order "
+                         "(default: ROUTER_WANS from .env)")
     ap.add_argument("--router-settle", type=float, default=5.0,
                     help="wait after the last restart before checking the IP (default 5s)")
     ap.add_argument("--router-ip-wait", type=float, default=45.0,

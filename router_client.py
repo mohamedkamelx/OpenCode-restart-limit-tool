@@ -1,11 +1,16 @@
-"""Self-contained client for the Huawei DG8045 gateway at 192.168.1.1.
+"""Self-contained client for a Huawei DG8045 gateway.
 
 No external modules: legacy-TLS HTTP over a single keep-alive socket, RSA
 password encryption, CSRF handling, and the handful of API calls the
 autocontinue tool needs.
 
-Credentials come from ROUTER_USER / ROUTER_PASS, defaulting to the values the
-gateway was set up with.
+Connection details come from the environment (loaded from .env by loadenv.py):
+
+    ROUTER_HOST, ROUTER_PORT
+    ROUTER_USER, ROUTER_PASS
+
+Copy .env.example to .env and fill in your own values. Nothing sensitive is
+stored in the code.
 """
 from __future__ import annotations
 
@@ -17,14 +22,18 @@ import secrets
 import socket
 import ssl
 
+from loadenv import load_env
+
+load_env()
+
 HOST = os.environ.get("ROUTER_HOST", "192.168.1.1")
 PORT = int(os.environ.get("ROUTER_PORT", "443"))
 
 # Keep the failure fast when the folder is used on someone else's network.
 CONNECT_TIMEOUT = float(os.environ.get("ROUTER_CONNECT_TIMEOUT", "3"))
 
-USER = os.environ.get("ROUTER_USER", "vodafone")
-PASS = os.environ.get("ROUTER_PASS", "NHBWA5UF")
+USER = os.environ.get("ROUTER_USER", "")
+PASS = os.environ.get("ROUTER_PASS", "")
 
 WRAPPER = "while(1); /*"
 
@@ -135,6 +144,10 @@ class Session:
     """Logged-in API session against the gateway."""
 
     def __init__(self):
+        if not USER or not PASS:
+            raise RuntimeError(
+                "router credentials missing: copy .env.example to .env and "
+                "set ROUTER_USER / ROUTER_PASS")
         self.c = Conn()
         self.csrf = {}
         self.login_result = {}

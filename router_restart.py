@@ -1,11 +1,12 @@
-"""Restart the DG8045 PPPoE WAN connections before resuming a session.
+"""Restart the gateway PPPoE WAN connections before resuming a session.
 
 Self-contained: the gateway client lives in router_client.py, in this folder.
+WAN names and credentials are configured in .env (or with --router-wans).
 
 Sequence used by autocontinue:
 
-    VID_20 restart (disconnect + connect, wait until Connected)
-    PTM3 trigger
+    first WAN restart (disconnect + connect, wait until Connected)
+    remaining WANs triggered
     settle 5s
     wait for the external IP to actually change
     -> then the caller sends "continue"
@@ -119,8 +120,8 @@ def restart(names, log, settle: float = 5.0, ip_wait: float = 45.0,
         except Exception as exc:
             log(f"router: {name} restart failed ({exc})")
 
-        # the live link must come back before moving on
-        if name.upper().endswith("VID_20"):
+        # the first (live) link must come back before moving on
+        if name == names[0]:
             back = _wait_status(s, name, lambda st: st == "Connected", timeout, log)
             if back is None:
                 log(f"router: warning, {name} did not reconnect within {timeout:.0f}s")
