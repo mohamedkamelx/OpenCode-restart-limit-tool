@@ -235,10 +235,6 @@ class Watcher:
         """Cycle the PPPoE link(s) so the next continue gets a fresh IP."""
         if not self.args.router:
             return
-        if not self.args.router_wans:
-            self.log("router: no WANs configured "
-                     "(set ROUTER_WANS in .env or pass --router-wans)")
-            return
         try:
             from router_restart import restart as restart_router
         except Exception as exc:
@@ -251,6 +247,8 @@ class Watcher:
                 ip_wait=self.args.router_ip_wait,
                 timeout=self.args.router_timeout,
                 dry_run=self.args.dry_run,
+                driver=self.args.router_driver,
+                strategy=self.args.ip_strategy,
             )
         except Exception as exc:
             # never block the continue because of the router
@@ -315,8 +313,11 @@ class Watcher:
                  f"| retry={a.retry_wait:.0f}s..{a.max_retry_wait:.0f}s "
                  f"| poll={a.poll}s{' | DRY RUN' if a.dry_run else ''}")
         if a.router:
-            self.log("router restart before continue: " + ", ".join(a.router_wans)
-                     + f" | settle={a.router_settle:.0f}s | ip-wait={a.router_ip_wait:.0f}s")
+            self.log("router restart before continue: "
+                     f"driver={a.router_driver} strategy={a.ip_strategy} "
+                     f"| WANs={', '.join(a.router_wans) or '(none)'} "
+                     f"| settle={a.router_settle:.0f}s "
+                     f"| ip-wait={a.router_ip_wait:.0f}s")
         else:
             self.log("router restart: off (--router enables it)")
 
@@ -485,6 +486,14 @@ def main() -> int:
     ap.add_argument("--router", action=argparse.BooleanOptionalAction, default=False,
                     help="restart the router WANs before each continue "
                          "(default: off)")
+    ap.add_argument("--router-driver",
+                    default=os.environ.get("ROUTER_DRIVER", "auto"),
+                    help="router driver: auto, huawei_dg8045, or module:Class "
+                         "(default: ROUTER_DRIVER from .env, else auto)")
+    ap.add_argument("--ip-strategy",
+                    default=os.environ.get("IP_CHANGE_STRATEGY", "pppoe_wan"),
+                    help="IP-change strategy: pppoe_wan or module:Class "
+                         "(default: IP_CHANGE_STRATEGY from .env)")
     ap.add_argument("--router-wans",
                     default=os.environ.get("ROUTER_WANS", ""),
                     help="comma-separated WAN names to restart, in order "

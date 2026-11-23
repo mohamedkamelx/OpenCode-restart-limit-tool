@@ -80,6 +80,12 @@ class Conn:
         self.s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
         return self.read_response()
 
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
     def _fill(self):
         data = self.s.recv(65536)
         if not data:
@@ -151,7 +157,11 @@ class Session:
         self.c = Conn()
         self.csrf = {}
         self.login_result = {}
-        self.login()
+        try:
+            self.login()
+        except Exception:
+            self.c.close()
+            raise
 
     def login(self):
         st, h, body = self.c.req("GET", "/")
@@ -168,6 +178,9 @@ class Session:
             strip_wrapper(body.decode("utf-8", "replace")))
         self._sync_csrf(self.login_result)
         return self.login_result
+
+    def close(self):
+        self.c.close()
 
     def _sync_csrf(self, obj):
         if isinstance(obj, dict) and obj.get("csrf_param") and obj.get("csrf_token"):
