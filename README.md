@@ -11,6 +11,17 @@ usage limit.
 
 Linux and macOS are supported. On Windows, omit `--detach`.
 
+## Workflow
+ 
+![Autocontinue workflow](workflow.png)
+ 
+1. The watcher polls the OpenCode session every 2 s (`--poll`).
+2. When the session stops, it reads the last assistant turn.
+3. If the error matches a limit pattern (`429`, `quota`, `rate limit`, ...), it counts as a limit stop. Anything else is ignored.
+4. With `--router`, the router WANs restart first to get a new external IP. Without it, this step is skipped.
+5. The watcher sends `continue` to the same session.
+6. If that also hits the limit, it waits 60 s, doubling each time up to 30 min (`--retry-wait`, `--max-retry-wait`).
+
 ## Files
 
 | File | Purpose |
