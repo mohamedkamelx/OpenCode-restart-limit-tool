@@ -488,8 +488,9 @@ def main() -> int:
                          "(default: off)")
     ap.add_argument("--router-driver",
                     default=os.environ.get("ROUTER_DRIVER", "auto"),
-                    help="router driver: auto, huawei_dg8045, or module:Class "
-                         "(default: ROUTER_DRIVER from .env, else auto)")
+                    help="router driver: auto, huawei_dg8045, zte_h168n, or "
+                         "module:Class (default: ROUTER_DRIVER from .env, "
+                         "else auto)")
     ap.add_argument("--ip-strategy",
                     default=os.environ.get("IP_CHANGE_STRATEGY", "pppoe_wan"),
                     help="IP-change strategy: pppoe_wan or module:Class "

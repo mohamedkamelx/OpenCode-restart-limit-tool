@@ -4,7 +4,8 @@ autocontinue.py calls restart(); the router driver and IP-change strategy are
 selected by ROUTER_DRIVER and IP_CHANGE_STRATEGY (or the matching CLI flags):
 
     ROUTER_DRIVER=auto                  try every registered driver
-    ROUTER_DRIVER=huawei_dg8045         built-in driver
+    ROUTER_DRIVER=huawei_dg8045         built-in Huawei driver
+    ROUTER_DRIVER=zte_h168n             built-in ZTE driver
     ROUTER_DRIVER=my_router:MyDriver    external driver plugin
 
     IP_CHANGE_STRATEGY=pppoe_wan        built-in strategy

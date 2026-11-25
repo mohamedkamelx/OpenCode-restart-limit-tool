@@ -34,6 +34,8 @@ Linux and macOS are supported. On Windows, omit `--detach`.
 | `router_kit/drivers/` | router drivers; add new routers here |
 | `router_kit/drivers/huawei_dg8045.py` | built-in Huawei DG8045 driver |
 | `router_kit/drivers/huawei_client.py` | low-level Huawei gateway client (legacy TLS, RSA login, CSRF, API) |
+| `router_kit/drivers/zte_h168n.py` | built-in ZTE ZXHN H168N V3.5 driver |
+| `router_kit/drivers/zte_client.py` | low-level ZTE gateway client (SHA256 login, session token, WAN Apply) |
 | `router_kit/strategies/` | IP-change strategies; add new methods here |
 | `router_kit/strategies/pppoe_wan.py` | built-in PPPoE WAN-bounce strategy |
 | `loadenv.py` | standard-library `.env` loader |
@@ -79,17 +81,18 @@ and manual copies of the folder.
 | `OPENCODE_SERVER_URL` | `opencode service status`, else `http://127.0.0.1:4096` | OpenCode base URL |
 | `OPENCODE_SERVICE_JSON` | `~/.config/opencode/service.json` | file containing the server password |
 | `OPENCODE_SESSION_ID` | auto-detect | session to watch when `--session` is omitted |
-| `ROUTER_DRIVER` | `auto` | router driver: `auto`, `huawei_dg8045`, or `module:Class` |
-| `ROUTER_HOST` / `ROUTER_PORT` | `192.168.1.1` / `443` | gateway address |
+| `ROUTER_DRIVER` | `auto` | router driver: `auto`, `huawei_dg8045`, `zte_h168n`, or `module:Class` |
+| `ROUTER_HOST` / `ROUTER_PORT` | `192.168.1.1` / `443` | gateway address (use port `80` for `zte_h168n`) |
 | `ROUTER_USER` / `ROUTER_PASS` | none (required for `--router`) | gateway login |
+| `ROUTER_PPP_USER` / `ROUTER_PPP_PASS` | none | PPPoE credentials used by `zte_h168n` |
 | `IP_CHANGE_STRATEGY` | `pppoe_wan` | IP-change strategy: `pppoe_wan` or `module:Class` |
 | `ROUTER_PLUGINS` | none | comma-separated modules to import before selecting plugins |
 | `ROUTER_WANS` | none (required for `--router`) | comma-separated WANs to restart, in order |
 | `ROUTER_CONNECT_TIMEOUT` | 3 s | connection timeout when no gateway answers |
 
-Router control is off by default. The built-in driver supports Huawei
-DG8045-style gateways. On other networks, leave `--router` disabled or add a
-driver (see below).
+Router control is off by default. Built-in drivers support Huawei DG8045-style
+gateways and the ZTE ZXHN H168N V3.5. On other networks, leave `--router`
+disabled or add a driver (see below).
 
 ## Usage
 
@@ -164,8 +167,11 @@ resuming. The default `pppoe_wan` strategy cycles the links in `ROUTER_WANS`:
 5. Send `continue`.
 
 `router_kit/restart.py` selects the driver and strategy and runs the
-sequence; `router_kit/drivers/huawei_client.py` contains the low-level
-gateway client. The gateway briefly drops internet during the cycle.
+sequence. The low-level clients are `router_kit/drivers/huawei_client.py` and
+`router_kit/drivers/zte_client.py`. For the ZTE driver, step 1 is the router's
+Internet -> WAN -> `INTERNET_TR069_R_PTM` form: the PPPoE username and password
+from `ROUTER_PPP_USER` / `ROUTER_PPP_PASS` are filled in and submitted, which
+makes the gateway redial. The gateway briefly drops internet during the cycle.
 
 ## Router drivers and IP-change strategies
 
@@ -183,9 +189,9 @@ A driver implements `RouterDriver` from `router_kit`:
 - `restart_wan(name, log, timeout)`
 - optional `reboot(log)`
 
-Built-in: `huawei_dg8045`. `ROUTER_DRIVER=auto` tries every registered driver
-and uses the first one that connects. Select one explicitly with
-`ROUTER_DRIVER=huawei_dg8045`, or load an external driver with
+Built-in: `huawei_dg8045` and `zte_h168n`. `ROUTER_DRIVER=auto` tries every
+registered driver and uses the first one that connects. Select one explicitly
+with `ROUTER_DRIVER=zte_h168n` (port `80`), or load an external driver with
 `ROUTER_DRIVER=my_router:MyDriver`. The module must be importable and the
 attribute may be a class or a zero-argument factory.
 

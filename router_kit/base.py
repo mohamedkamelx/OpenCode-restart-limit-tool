@@ -107,12 +107,15 @@ def resolve_driver(spec: str | None, log: Log) -> RouterDriver:
     spec:
         "auto"                 try every registered driver, in order
         "huawei_dg8045"        a registered driver name
+        "zte_h168n"            another registered driver name
         "module:Class"         import a driver plugin
         "module:create"        import a zero-argument factory
     """
     if not spec or spec == "auto":
         return _detect_driver(log)
-    return _create(spec, DRIVERS, "router driver")
+    driver = _create(spec, DRIVERS, "router driver")
+    driver.connect()
+    return driver
 
 
 def resolve_strategy(spec: str | None) -> IpChangeStrategy:
