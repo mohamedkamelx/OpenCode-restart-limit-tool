@@ -118,7 +118,7 @@ class ZTEH168N(RouterDriver):
                 last = status
             if predicate(status):
                 return status
-            time.sleep(2)
+            time.sleep(0.5)
         return None
 
 

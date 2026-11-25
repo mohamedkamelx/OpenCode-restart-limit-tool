@@ -19,10 +19,12 @@ Usage
 
 Stop with Ctrl-C, SIGTERM, or the --stop-file path.
 
-Retry policy: the first continue after a limit stop is sent immediately. If
-that turn also ends on a limit, the next attempt is delayed by --retry-wait
-and the delay doubles up to --max-retry-wait. A stop without a limit error
-resets the backoff.
+Retry policy: a limit stop that comes long after our previous continue means
+the quota was working, so the next continue is sent immediately. Only a limit
+stop that arrives quickly after a continue (within --retry-window) counts as
+the same episode: that one is delayed by --retry-wait and the delay doubles up
+to --max-retry-wait. A stop without a limit error also resets the backoff, and
+a limit stop never postpones a continue that is already queued.
 """
 from __future__ import annotations
 
@@ -226,6 +228,7 @@ class Watcher:
         self.running: dict[str, bool] = {}
         self.due: dict[str, float] = {}       # sid -> when to send
         self.backoff: dict[str, float] = {}   # sid -> seconds
+        self.cycled: dict[str, bool] = {}     # router already bounced this episode
         self.sent = 0
         self.last_send: dict[str, float] = {}
         self.stop = False
@@ -234,14 +237,14 @@ class Watcher:
     def _restart_router(self):
         """Cycle the PPPoE link(s) so the next continue gets a fresh IP."""
         if not self.args.router:
-            return
+            return None
         try:
             from router_restart import restart as restart_router
         except Exception as exc:
             self.log(f"router: module unavailable ({exc})")
-            return
+            return None
         try:
-            restart_router(
+            return restart_router(
                 self.args.router_wans, self.log,
                 settle=self.args.router_settle,
                 ip_wait=self.args.router_ip_wait,
@@ -253,6 +256,24 @@ class Watcher:
         except Exception as exc:
             # never block the continue because of the router
             self.log(f"router: restart failed ({type(exc).__name__}: {exc})")
+            return None
+
+    def _needs_continue(self, sid: str) -> bool:
+        """True while the session is still stopped on a limit.
+
+        Used right before sending so a prompt that arrives after the user (or
+        OpenCode's own retry) already resumed the session is dropped instead
+        of being posted on top of it.
+        """
+        try:
+            if sid in self.c.active():
+                return False
+            return bool(limit_reason(self.c.last_assistant(sid),
+                                     self.args.scan_text))
+        except Exception as exc:
+            self.log(f"{sid[-8:]} pre-send check failed "
+                     f"({type(exc).__name__}); sending anyway")
+            return True
 
     def _send(self, sid: str):
         self.due.pop(sid, None)
@@ -260,9 +281,40 @@ class Watcher:
             self.log(f"reached --max {self.args.max}, stopping")
             self.stop = True
             return
-        self._restart_router()
+        if not self._needs_continue(sid):
+            self.log(f"{sid[-8:]} session is active - continue cancelled")
+            return
+
+        started = time.time()
+        router_secs = 0.0
+        if self.args.router:
+            if self.cycled.get(sid):
+                self.log(f"{sid[-8:]} router already bounced for this limit "
+                         "- not changing the IP again")
+            else:
+                # One bounce per limit episode. If the new IP still hits the
+                # limit, changing it again will not help; retry the prompt
+                # only instead of spamming the router.
+                self.cycled[sid] = True
+                result = self._restart_router()
+                router_secs = time.time() - started
+                if (not self.args.dry_run and isinstance(result, dict)
+                        and result.get("changed") is False):
+                    # The IP did not actually change, so this bounce failed
+                    # rather than proved useless; allow one more next time.
+                    self.cycled[sid] = False
+                    self.log("router: IP did not change - will retry the "
+                             "router on the next attempt")
+
+        # The router cycle takes a few seconds; re-check so we do not add a
+        # prompt to a session the user already resumed in the meantime.
+        if not self._needs_continue(sid):
+            self.log(f"{sid[-8:]} session resumed during router change "
+                     "- continue cancelled")
+            return
         if self.args.dry_run:
-            self.log(f"{sid[-8:]} limit -> would send {self.args.prompt!r} (dry run)")
+            self.log(f"{sid[-8:]} limit -> would send {self.args.prompt!r} "
+                     f"(dry run, {time.time() - started:.1f}s)")
             self.sent += 1
             self.last_send[sid] = time.time()
             return
@@ -279,7 +331,10 @@ class Watcher:
             return
         self.sent += 1
         self.last_send[sid] = time.time()
-        self.log(f"{sid[-8:]} limit -> sent {self.args.prompt!r} (#{self.sent})")
+        took = time.time() - started
+        extra = f", router {router_secs:.1f}s" if self.args.router else ""
+        self.log(f"{sid[-8:]} limit -> sent {self.args.prompt!r} "
+                 f"(#{self.sent}, {took:.1f}s{extra})")
 
     def _schedule(self, sid: str, retry: bool):
         now = time.time()
@@ -290,20 +345,50 @@ class Watcher:
             self.backoff[sid] = min(delay * 2, self.args.max_retry_wait)
         else:
             delay = 0.0
-        self.due[sid] = now + delay
+        due = now + delay
+        previous = self.due.get(sid)
+        if previous is not None and previous <= due:
+            due = previous          # never postpone a queued continue
+        self.due[sid] = due
         if delay:
             self.log(f"{sid[-8:]} next attempt in {int(delay)}s")
 
     def _on_stop(self, sid: str):
-        msg = self.c.last_assistant(sid)
-        reason = limit_reason(msg, self.args.scan_text)
+        reason = limit_reason(self.c.last_assistant(sid), self.args.scan_text)
+        if not reason and self.args.recheck > 0:
+            # OpenCode can report the session idle just before the failed
+            # assistant turn becomes readable; look once more before deciding.
+            time.sleep(self.args.recheck)
+            reason = limit_reason(self.c.last_assistant(sid),
+                                  self.args.scan_text)
         if not reason:
             self.log(f"{sid[-8:]} stopped (no limit error) - waiting")
             self.backoff[sid] = self.args.retry_wait
+            self.cycled.pop(sid, None)
             self.due.pop(sid, None)
             return
-        self._schedule(sid, retry=bool(self.last_send.get(sid)))
-        self.log(f"{sid[-8:]} stopped on limit ({reason!r}) -> continue queued")
+
+        if sid in self.due:
+            self.log(f"{sid[-8:]} stopped on limit ({reason!r}) "
+                     "- continue already queued")
+            return
+
+        sent_at = self.last_send.get(sid)
+        same_episode = (sent_at is not None
+                        and time.time() - sent_at < self.args.retry_window)
+        if same_episode:
+            self._schedule(sid, retry=True)
+            self.log(f"{sid[-8:]} stopped on limit ({reason!r}) "
+                     "- retrying same episode")
+        else:
+            # The quota was working since the last continue, so this is a new
+            # limit: do not punish it with the old backoff, and allow a fresh
+            # router bounce for the new episode.
+            self.backoff[sid] = self.args.retry_wait
+            self.cycled.pop(sid, None)
+            self._schedule(sid, retry=False)
+            self.log(f"{sid[-8:]} stopped on limit ({reason!r}) "
+                     "- continue queued now")
 
     # -- main ------------------------------------------------------------- #
     def run(self) -> int:
@@ -311,6 +396,7 @@ class Watcher:
         self.log("watching " + (", ".join(sorted(self.targets)) or "(none)"))
         self.log(f"prompt on limit: {a.prompt!r} | max={a.max or 'unlimited'} "
                  f"| retry={a.retry_wait:.0f}s..{a.max_retry_wait:.0f}s "
+                 f"| window={a.retry_window:.0f}s "
                  f"| poll={a.poll}s{' | DRY RUN' if a.dry_run else ''}")
         if a.router:
             self.log("router restart before continue: "
@@ -418,7 +504,9 @@ def status(args, client: Client, log: Log) -> int:
         state = "running" if sid in active else "stopped"
         detail = f"last turn failed on limit: {reason!r}" if reason else "last turn: no limit error"
         log(f"session: {sid}  state={state}  {detail}")
-    log(f"prompt : {args.prompt!r}  retry={args.retry_wait:.0f}s  poll={args.poll}s")
+    log(f"prompt : {args.prompt!r}  "
+        f"retry={args.retry_wait:.0f}s..{args.max_retry_wait:.0f}s  "
+        f"window={args.retry_window:.0f}s  poll={args.poll}s")
     return 0
 
 
@@ -475,11 +563,21 @@ def main() -> int:
     ap.add_argument("--max", type=int, default=0, help="stop after N prompts (0 = unlimited)")
     ap.add_argument("--min-interval", type=float, default=5.0,
                     help="never send two prompts closer than this (default 5s)")
-    ap.add_argument("--retry-wait", type=float, default=60.0,
-                    help="first backoff after a continue also hits the limit (default 60s)")
-    ap.add_argument("--max-retry-wait", type=float, default=1800.0,
-                    help="cap for the doubling backoff (default 1800s)")
-    ap.add_argument("--poll", type=float, default=2.0, help="poll interval (default 2s)")
+    ap.add_argument("--retry-window", type=float, default=90.0,
+                    help="a limit that follows our continue within this many "
+                         "seconds is the same episode and is retried with "
+                         "backoff; a later limit is a fresh one and continues "
+                         "immediately (default 90s)")
+    ap.add_argument("--retry-wait", type=float, default=30.0,
+                    help="first backoff after a continue also hits the limit "
+                         "(default 30s)")
+    ap.add_argument("--max-retry-wait", type=float, default=300.0,
+                    help="cap for the doubling backoff (default 300s)")
+    ap.add_argument("--recheck", type=float, default=1.0,
+                    help="seconds to wait and re-read a stop with no visible "
+                         "limit error before ignoring it (default 1s, 0=off)")
+    ap.add_argument("--poll", type=float, default=1.0,
+                    help="poll interval (default 1s)")
     ap.add_argument("--for", dest="for_seconds", type=float, default=0,
                     help="exit after N seconds (default: unlimited)")
     ap.add_argument("--dry-run", action="store_true", help="detect and log, send nothing")
@@ -497,14 +595,16 @@ def main() -> int:
                          "(default: IP_CHANGE_STRATEGY from .env)")
     ap.add_argument("--router-wans",
                     default=os.environ.get("ROUTER_WANS", ""),
-                    help="comma-separated WAN names to restart, in order "
+                    help="comma-separated WAN names to restart together "
                          "(default: ROUTER_WANS from .env)")
-    ap.add_argument("--router-settle", type=float, default=5.0,
-                    help="wait after the last restart before checking the IP (default 5s)")
-    ap.add_argument("--router-ip-wait", type=float, default=45.0,
-                    help="max seconds to wait for a new external IP (default 45)")
-    ap.add_argument("--router-timeout", type=float, default=60.0,
-                    help="max seconds to wait for a WAN to reconnect (default 60)")
+    ap.add_argument("--router-settle", type=float, default=1.0,
+                    help="seconds the new IP must stay up before trusting it "
+                         "(default 1s)")
+    ap.add_argument("--router-ip-wait", type=float, default=30.0,
+                    help="max seconds to wait for a new external IP (default 30)")
+    ap.add_argument("--router-timeout", type=float, default=30.0,
+                    help="max seconds to wait for a WAN to drop or reconnect "
+                         "(default 30)")
     ap.add_argument("--scan-text", action="store_true",
                     help="also treat a normal turn whose text mentions a limit as a limit stop")
     ap.add_argument("--status", action="store_true", help="print state and exit")

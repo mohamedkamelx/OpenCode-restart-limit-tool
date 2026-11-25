@@ -53,6 +53,19 @@ class RouterDriver(ABC):
     def restart_wan(self, name: str, log: Log, timeout: float = 60.0) -> bool:
         """Disconnect and reconnect one WAN. Return False if it is missing."""
 
+    # Optional fast path: a driver that can drop and raise its links in two
+    # separate steps lets the strategy bounce every WAN in parallel instead of
+    # waiting for the first one to fully reconnect before touching the second.
+    supports_fast_restart = False
+
+    def disconnect_wan(self, name: str, log: Log) -> bool:
+        """Trigger a disconnect without reconnecting (fast path only)."""
+        raise RouterError(f"{self.name} does not support fast WAN restart")
+
+    def connect_wan(self, name: str, log: Log) -> bool:
+        """Trigger a reconnect after disconnect_wan() (fast path only)."""
+        raise RouterError(f"{self.name} does not support fast WAN restart")
+
     def reboot(self, log: Log) -> None:
         """Optional: reboot the router. Strategies may use this."""
         raise RouterError(f"{self.name} does not support reboot")

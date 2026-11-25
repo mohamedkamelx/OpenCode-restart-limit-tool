@@ -26,8 +26,8 @@ from router_kit.base import (RouterError, load_plugins, resolve_driver,
 __all__ = ["RouterError", "restart"]
 
 
-def restart(names, log, settle: float = 5.0, ip_wait: float = 45.0,
-            timeout: float = 60.0, dry_run: bool = False,
+def restart(names, log, settle: float = 1.0, ip_wait: float = 30.0,
+            timeout: float = 30.0, dry_run: bool = False,
             driver: str | None = None,
             strategy: str | None = None) -> dict:
     """Restart the configured WANs and wait for a new external IP.

@@ -15,12 +15,13 @@ Linux and macOS are supported. On Windows, omit `--detach`.
  
 ![Autocontinue workflow](workflow.png)
  
-1. The watcher polls the OpenCode session every 2 s (`--poll`).
-2. When the session stops, it reads the last assistant turn.
+1. The watcher polls the OpenCode session every second (`--poll`).
+2. When the session stops, it reads the last assistant turn. If the failed
+   turn is not visible yet, it re-reads once after `--recheck` seconds.
 3. If the error matches a limit pattern (`429`, `quota`, `rate limit`, ...), it counts as a limit stop. Anything else is ignored.
 4. With `--router`, the router WANs restart first to get a new external IP. Without it, this step is skipped.
 5. The watcher sends `continue` to the same session.
-6. If that also hits the limit, it waits 60 s, doubling each time up to 30 min (`--retry-wait`, `--max-retry-wait`).
+6. If that also hits the limit within 90 s (`--retry-window`), it waits 30 s, doubling each time up to 5 min (`--retry-wait`, `--max-retry-wait`). A limit that arrives later means the quota was working, so the next continue is immediate and the backoff resets.
 
 ## Files
 
@@ -88,7 +89,7 @@ and manual copies of the folder.
 | `ROUTER_PPP_USER` / `ROUTER_PPP_PASS` | none | PPPoE credentials used by `zte_h168n` |
 | `IP_CHANGE_STRATEGY` | `pppoe_wan` | IP-change strategy: `pppoe_wan` or `module:Class` |
 | `ROUTER_PLUGINS` | none | comma-separated modules to import before selecting plugins |
-| `ROUTER_WANS` | none (required for `--router`) | comma-separated WANs to restart, in order |
+| `ROUTER_WANS` | none (required for `--router`) | comma-separated WANs to restart together |
 | `ROUTER_CONNECT_TIMEOUT` | 3 s | connection timeout when no gateway answers |
 
 Router control is off by default. Built-in drivers support Huawei DG8045-style
@@ -122,18 +123,20 @@ Alternatively, start it with `--stop-file /tmp/agent.stop` and stop it with
 | `--prompt` | `continue` | text sent back into the session |
 | `--delivery` | `queue` | `queue` waits for the turn to drain; `steer` injects mid-turn |
 | `--max` | 0 (unlimited) | stop after N prompts |
-| `--retry-wait` | 60 s | first delay after a continue that also hits the limit |
-| `--max-retry-wait` | 1800 s | cap for the doubling delay |
-| `--poll` | 2 s | how often session state is checked |
+| `--retry-window` | 90 s | a limit stop this soon after a continue is the same episode and uses backoff; a later one continues immediately |
+| `--retry-wait` | 30 s | first delay after a continue that also hits the limit |
+| `--max-retry-wait` | 300 s | cap for the doubling delay |
+| `--recheck` | 1 s | re-read a stop with no visible limit error once before ignoring it |
+| `--poll` | 1 s | how often session state is checked |
 | `--scan-text` | off | treat a normal turn whose text mentions a limit as a limit stop |
 | `--dry-run` | off | detect and log only |
 | `--router` / `--no-router` | off | change the IP before each continue |
 | `--router-driver` | `ROUTER_DRIVER` from `.env`, else `auto` | router driver name or plugin path |
 | `--ip-strategy` | `IP_CHANGE_STRATEGY` from `.env`, else `pppoe_wan` | IP-change strategy name or plugin path |
-| `--router-wans A,B` | `ROUTER_WANS` from `.env` | WANs to restart, in order |
-| `--router-settle` | 5 s | wait after the restarts before checking the IP |
-| `--router-ip-wait` | 45 s | maximum wait for a new external IP |
-| `--router-timeout` | 60 s | maximum wait for a WAN to reconnect |
+| `--router-wans A,B` | `ROUTER_WANS` from `.env` | WANs to restart together |
+| `--router-settle` | 1 s | seconds the new IP must stay up before it is trusted |
+| `--router-ip-wait` | 30 s | maximum wait for a new external IP |
+| `--router-timeout` | 30 s | maximum wait for a WAN to drop or reconnect |
 
 ## Behaviour
 
@@ -141,8 +144,8 @@ Alternatively, start it with `--stop-file /tmp/agent.stop` and stop it with
 running --(stops)--> check last assistant turn
                        |
                        +-- limit error?  -> restart router WANs
-                       |                     (ROUTER_WANS, in order)
-                       |                     wait 5 s + confirm new IP
+                       |                     (ROUTER_WANS, together)
+                       |                     confirm new IP (1 bounce max)
                        |                     -> send "continue" to the SAME session
                        +-- anything else -> ignore, keep waiting
 ```
@@ -150,22 +153,40 @@ running --(stops)--> check last assistant turn
 The router step runs only with `--router`. If it fails (router offline, login
 error), the failure is logged and the continue is still sent.
 
-After a continue, the watcher returns to waiting. If the continue also ends on
-a limit, the next attempt is delayed by `--retry-wait`, doubling up to
-`--max-retry-wait`. A stop without a limit error resets the delay.
+After a continue, the watcher returns to waiting. A limit stop that arrives
+within `--retry-window` (default 90 s) is the same episode, so it is delayed by
+`--retry-wait` and the delay doubles up to `--max-retry-wait`. A limit stop
+that arrives later means the quota was working, so it continues immediately
+and resets the backoff. A stop without a limit error also resets it, and a new
+stop never postpones a continue that is already queued.
+
+Before sending, the watcher checks the session once more. If the user (or
+OpenCode itself) already resumed it during the router cycle, the queued
+continue is dropped instead of posting an extra prompt.
+
+The router is bounced **once per limit episode**. If the new IP still hits the
+limit, the watcher keeps retrying the prompt with backoff but leaves the
+router alone; changing the IP again cannot help and only drops the connection.
+A productive run or a normal stop starts a new episode and re-allows one
+bounce.
 
 ## Router restart
 
 Disabled by default. With `--router`, the selected strategy runs before
 resuming. The default `pppoe_wan` strategy cycles the links in `ROUTER_WANS`:
 
-1. First WAN: disconnect, wait for the link to drop, reconnect, and wait until
-   `ConnectionStatus == "Connected"`.
-2. Remaining WANs: trigger a connect.
-3. Wait `--router-settle` (default 5 s).
-4. Poll the driver for up to `--router-ip-wait` (default 45 s) until the
-   external IP differs from the captured value.
-5. Send `continue`.
+1. Drop every WAN at once instead of waiting for the first one to reconnect.
+2. Reconnect each WAN the moment it reports down, so the links reconnect in
+   parallel.
+3. Poll every 0.4 s until every WAN is `Connected` and the external IP has
+   changed; the new IP must stay up for `--router-settle` (default 1 s).
+4. Send `continue`.
+
+Drivers without the fast restart hooks keep the sequential `restart_wan()`
+behaviour. The whole cycle is bounded by `--router-timeout` and
+`--router-ip-wait`. On the setup this was tuned for, the cycle dropped from
+about 16 s to about 8-10 s; the fixed 5 s settle and 2-3 s polling were the
+main cost.
 
 `router_kit/restart.py` selects the driver and strategy and runs the
 sequence. The low-level clients are `router_kit/drivers/huawei_client.py` and

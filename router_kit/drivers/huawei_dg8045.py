@@ -16,6 +16,7 @@ DISCONNECT, CONNECT = 1, 2
 
 class HuaweiDG8045(RouterDriver):
     name = "huawei_dg8045"
+    supports_fast_restart = True
 
     def __init__(self):
         self.session: Session | None = None
@@ -50,18 +51,34 @@ class HuaweiDG8045(RouterDriver):
         ]
 
     def restart_wan(self, name: str, log: Log, timeout: float = 60.0) -> bool:
+        if not self.disconnect_wan(name, log):
+            return False
+        self._wait(name, lambda st: st != "Connected",
+                   min(timeout, 20.0), log)
+        time.sleep(0.5)
+        return self.connect_wan(name, log)
+
+    def disconnect_wan(self, name: str, log: Log) -> bool:
         wan = self._find(name)
         if wan is None:
             log(f"router: {name} not found, skipped")
             return False
-
-        status = wan["status"]
-        log(f"router: {name} is {status}")
-        if status == "Connected":
+        if wan["status"] == "Connected":
+            log(f"router: {name} is {wan['status']}, disconnecting")
             self._trigger(wan, DISCONNECT)
-            self._wait(name, lambda st: st != "Connected",
-                       min(timeout, 45.0), log)
-            time.sleep(2)
+        else:
+            log(f"router: {name} is {wan['status']}, already down")
+        return True
+
+    def connect_wan(self, name: str, log: Log) -> bool:
+        wan = self._find(name)
+        if wan is None:
+            log(f"router: {name} not found, skipped")
+            return False
+        if wan["status"] == "Connected":
+            log(f"router: {name} already connected")
+            return True
+        log(f"router: {name} is {wan['status']}, connecting")
         self._trigger(wan, CONNECT)
         return True
 
@@ -91,7 +108,7 @@ class HuaweiDG8045(RouterDriver):
                 last = status
             if predicate(status):
                 return status
-            time.sleep(2)
+            time.sleep(0.4)
         return None
 
     def _trigger(self, wan: dict, code: int) -> None:
