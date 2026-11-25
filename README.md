@@ -38,6 +38,7 @@ Linux and macOS are supported. On Windows, omit `--detach`.
 | `router_kit/drivers/zte_client.py` | low-level ZTE gateway client (SHA256 login, session token, WAN Apply) |
 | `router_kit/strategies/` | IP-change strategies; add new methods here |
 | `router_kit/strategies/pppoe_wan.py` | built-in PPPoE WAN-bounce strategy |
+| `opencode_plugin/` | optional OpenCode plugin exposing `router.change_ip` |
 | `loadenv.py` | standard-library `.env` loader |
 | `.env.example` | configuration template |
 | `README.md` | documentation |
@@ -278,6 +279,35 @@ ROUTER_PLUGINS=my_router,my_ip
 ROUTER_DRIVER=auto
 IP_CHANGE_STRATEGY=reboot
 ```
+
+## OpenCode plugin
+
+`opencode_plugin/` is a small local plugin that exposes the router restart as
+an OpenCode tool. Load it from global `~/.config/opencode/opencode.json`:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "D:\\path\\to\\OpenCode-restart-limit-tool\\opencode_plugin",
+      "options": {
+        "repo": "D:\\path\\to\\OpenCode-restart-limit-tool",
+        "wans": "INTERNET_TR069_R_PTM"
+      }
+    }
+  ]
+}
+```
+
+It registers the `router.change_ip` tool. In Code Mode:
+
+```js
+await tools.router.change_ip({})            // bounce the WAN and change IP
+await tools.router.change_ip({ dry_run: true })  // inspect without changing
+```
+
+The tool uses the same `.env` driver, strategy, and WAN configuration as
+`autocontinue.py`.
 
 ## OpenCode API
 
